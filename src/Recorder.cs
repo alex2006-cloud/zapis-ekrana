@@ -62,7 +62,7 @@ namespace ZapisEkrana
 
             var psi = new ProcessStartInfo();
             psi.FileName = AppPaths.FfmpegFile;
-            psi.Arguments = BuildArgs(monitor, pipeName, OutputFile);
+            psi.Arguments = BuildArgs(monitor, pipeName, OutputFile, settings);
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
             psi.RedirectStandardError = true;
@@ -280,34 +280,57 @@ namespace ZapisEkrana
             return path;
         }
 
-        static string BuildArgs(MonitorInfo monitor, string pipeName, string output)
+        static string BuildArgs(MonitorInfo monitor, string pipeName, string output, AppSettings settings)
         {
+            int fps = settings.NormalizedFps();
+            PictureSize frame = settings.NormalizedSize();
             int ow = monitor.Width;
             int oh = monitor.Height;
-            if (ow > 1920)
+            bool shrink = ow > frame.Width || oh > frame.Height;
+            if (shrink)
             {
-                oh = (int)Math.Round(oh * (1920.0 / ow));
-                ow = 1920;
+                ow = frame.Width;
+                oh = frame.Height;
             }
-            if ((ow % 2) != 0) ow--;
-            if ((oh % 2) != 0) oh--;
-            if (ow < 2) ow = 2;
-            if (oh < 2) oh = 2;
+            else
+            {
+                if ((ow % 2) != 0) ow--;
+                if ((oh % 2) != 0) oh--;
+            }
+
+            bool hevc = settings.UseHevc();
+            double pixels = (ow * (double)oh) / (1920.0 * 1080.0);
+            int video = (int)Math.Round(2000.0 * pixels * (fps / 30.0));
+            if (hevc)
+                video = (int)Math.Round(video * 0.65);
+            if (video < 150)
+                video = 150;
+            int maxRate = video + (video / 4);
+            int bufSize = video * 2;
+            string codec = hevc
+                ? "libx265 -preset superfast -tag:v hvc1 -x265-params log-level=error"
+                : "libx264 -preset faster";
 
             string scale = "";
-            if (ow != monitor.Width || oh != monitor.Height)
-                scale = string.Format(CultureInfo.InvariantCulture, "-vf scale={0}:{1} ", ow, oh);
+            if (shrink)
+                scale = string.Format(CultureInfo.InvariantCulture, "-vf scale={0}:{1}:force_original_aspect_ratio=decrease,pad={0}:{1}:(ow-iw)/2:(oh-ih)/2 ", ow, oh);
 
             string pipe = @"\\.\pipe\" + pipeName;
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "-hide_banner -y -thread_queue_size 1024 -f s16le -ar 48000 -ac 2 -i {0} -thread_queue_size 1024 -f gdigrab -framerate 30 -draw_mouse 1 -offset_x {1} -offset_y {2} -video_size {3}x{4} -i desktop {5}-map 1:v -map 0:a -pix_fmt yuv420p -c:v libx264 -preset faster -b:v 2000k -maxrate 2500k -bufsize 4000k -g 60 -c:a aac -b:a 128k -ar 48000 -ac 2 -movflags +faststart {6}",
+                "-hide_banner -y -thread_queue_size 1024 -f s16le -ar 48000 -ac 2 -i {0} -thread_queue_size 1024 -f gdigrab -framerate {1} -draw_mouse 1 -offset_x {2} -offset_y {3} -video_size {4}x{5} -i desktop {6}-map 1:v -map 0:a -pix_fmt yuv420p -c:v {7} -b:v {8}k -maxrate {9}k -bufsize {10}k -g {11} -c:a aac -b:a 128k -ar 48000 -ac 2 -movflags +faststart {12}",
                 Quote(pipe),
+                fps,
                 monitor.X,
                 monitor.Y,
                 monitor.Width,
                 monitor.Height,
                 scale,
+                codec,
+                video,
+                maxRate,
+                bufSize,
+                fps * 2,
                 Quote(output));
         }
 
